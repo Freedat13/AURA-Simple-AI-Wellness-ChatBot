@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aura: Your Wellness Companion</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        /* Custom styles for a softer, wellness-focused aesthetic */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f0fdf4; /* Pale green background */
+        }
+        .chat-container {
+            max-width: 768px;
+            height: 100vh; /* Use full viewport height by default */
+            max-height: none; /* Remove height constraint for full screen */
+            margin: 0 auto; /* Center horizontally, remove vertical margin */
+            box-shadow: none; /* Remove shadow for full screen look */
+            border-radius: 0; /* Remove border radius for full screen effect */
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .header-bg {
+            background: linear-gradient(135deg, #a7f3d0 0%, #34d399 100%); /* Soft gradient */
+        }
+        .user-message {
+            background-color: #d1fae5; /* User message bubble color */
+            align-self: flex-end;
+        }
+        .aura-message {
+            background-color: #f0fdf4; /* Aura message bubble color */
+            border: 1px solid #d1fae5;
+            align-self: flex-start;
+        }
+        .loading-dot {
+            width: 8px;
+            height: 8px;
+            background-color: #059669;
+            border-radius: 50%;
+            display: inline-block;
+            margin: 0 2px;
+            animation: bounce 1s infinite ease-in-out;
+        }
+        .loading-dot:nth-child(2) { animation-delay: 0.2s; }
+        .loading-dot:nth-child(3) { animation-delay: 0.4s; }
+
+        @keyframes bounce {
+            0%, 80%, 100% { transform: translateY(0); }
+            40% { transform: translateY(-8px); }
+        }
+        /* Style adjustments for screens wider than 768px (Desktop View) */
+        @media (min-width: 769px) {
+            .chat-container {
+                max-width: 800px;
+                height: 90vh; /* Revert to 90vh height on desktop to leave some space */
+                max-height: 850px;
+                margin: 5vh auto;
+                border-radius: 1.5rem;
+                box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="app" class="chat-container">
+
+        <header class="header-bg p-4 text-white flex items-center justify-between shadow-lg">
+            <div class="flex items-center">
+                <i data-lucide="leaf" class="w-6 h-6 mr-3"></i>
+                <h1 class="text-2xl font-bold">Aura: Wellness Companion</h1>
+            </div>
+        </header>
+
+        <div id="chat-messages" class="flex-1 p-4 overflow-y-auto space-y-4">
+             <div class="flex justify-start initial-greeting-placeholder">
+                <div class="aura-message p-3 rounded-xl max-w-xs md:max-w-md shadow-sm opacity-50">
+                    <p class="text-gray-700">Connecting...</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="p-4 border-t border-gray-200 bg-white">
+            <div id="error-message" class="text-red-500 text-sm mb-2 hidden"></div>
+            <div class="flex space-x-3">
+                <textarea
+                    id="user-input"
+                    class="flex-1 p-3 border border-gray-300 rounded-xl resize-none focus:ring-green-500 focus:border-green-500 transition duration-150"
+                    placeholder="Connecting to Aura..."
+                    rows="2"
+                    onkeydown="if(event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); }"
+                    disabled
+                ></textarea>
+                <button
+                    id="send-button"
+                    class="bg-green-500 hover:bg-green-600 text-white font-semibold py-3 px-5 rounded-xl transition duration-150 flex items-center justify-center disabled:opacity-50"
+                    onclick="sendMessage()"
+                    disabled
+                >
+                    <span id="button-icon"><i data-lucide="send" class="w-5 h-5"></i></span>
+                </button>
+            </div>
+            <p class="text-xs text-gray-500 mt-2">Press Enter to send. Aura remembers your name and past chats!</p>
+        </div>
+    </div>
+
+    <script type="module">
+        // --- Configuration and State ---
+        // API Key (Placeholder, will be handled by the environment)
+        const API_KEY = "AIzaSyD-YOUR-REAL-SECRET-KEY-HERE";
+        const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${API_KEY}`;
+
+        // System Instruction defines the AI's persona and goal
+        const SYSTEM_INSTRUCTION = {
+            parts: [{
+                text: "You are 'Aura', a deeply empathetic and caring wellness companion. Your primary goal is to provide comfort, positive affirmations, and gentle, actionable wellness tips based on the user's emotional state. Your tone is always warm, supportive, and non-judgmental. If the user expresses a negative emotion (stress, sadness, anxiety, overwhelm), first, validate their feelings with compassion, and then offer a simple, relevant coping strategy (e.g., a short breathing exercise, a suggestion for a nature walk, or a short mindfulness moment). Keep your responses concise, loving, and focused on immediate well-being. Refer to the user by their name if you know it."
+            }]
+        };
+
+        // State variables
+        let userId = crypto.randomUUID(); // Generate a unique ID for the session
+        let isAuthReady = true;           // Always ready since we removed auth/db connection
+
+        // User Profile State
+        let userName = null;
+        let userOccupation = null;
+        // -1: Complete, 0: Ask Name, 1: Ask Occupation
+        let onboardingStep = -2; // Start before step 0
+
+        // Chat State (Using sessionStorage for persistence within the session)
+        const PROFILE_KEY = 'auraProfile';
+        const CHAT_KEY = 'auraChatHistory';
+        let chatHistory = []; // Messages retrieved from session storage + current greeting
+
+        const chatMessages = document.getElementById('chat-messages');
+        const userInput = document.getElementById('user-input');
+        const sendButton = document.getElementById('send-button');
+        const errorMessageDiv = document.getElementById('error-message');
+
+
+        // --- Utility Functions ---
+
+        /**
+         * Returns only the user/model history for the Gemini API, excluding internal greetings.
+         */
+        function getApiChatHistory() {
+            return chatHistory
+                .filter(msg => msg.role === 'user' || msg.role === 'model')
+                .map(msg => ({
+                    role: msg.role,
+                    parts: msg.parts
+                }));
+        }
+
+        /**
+         * Displays a temporary error message.
+         */
+        function showError(message) {
+            errorMessageDiv.textContent = message;
+            errorMessageDiv.classList.remove('hidden');
+            setTimeout(() => errorMessageDiv.classList.add('hidden'), 5000);
+        }
+
+        /**
+         * Renders a message to the chat UI.
+         */
+        function renderMessage(role, text) {
+            const isUser = role === 'user';
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `flex ${isUser ? 'justify-end' : 'justify-start'}`;
+
+            const bubble = document.createElement('div');
+            bubble.className = `p-3 rounded-xl max-w-xs md:max-w-md shadow-md break-words ${isUser ? 'user-message text-gray-800 rounded-br-none' : 'aura-message text-gray-700 rounded-tl-none'}`;
+            bubble.innerHTML = text.replace(/\n/g, '<br>'); // Preserve line breaks
+
+            messageDiv.appendChild(bubble);
+            chatMessages.appendChild(messageDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight; // Auto-scroll to bottom
+        }
+
+        /**
+         * Renders all messages currently in chatHistory.
+         */
+        function renderAllMessages() {
+            chatMessages.innerHTML = ''; // Clear existing messages
+            chatHistory.forEach(message => {
+                renderMessage(message.role, message.parts[0].text);
+            });
+            // Update input state
+            userInput.disabled = onboardingStep === -2;
+            sendButton.disabled = onboardingStep === -2;
+            
+            let placeholderText = "Connecting to Aura...";
+            if (onboardingStep === 0) {
+                placeholderText = `Type your name here...`;
+            } else if (onboardingStep === 1) {
+                placeholderText = `Type your occupation (student/employee) here...`;
+            } else if (onboardingStep === -1) {
+                placeholderText = `Ask Aura about your well-being...`;
+            }
+
+            userInput.placeholder = placeholderText;
+        }
+
+        /**
+         * Displays a temporary loading indicator.
+         */
+        function showLoading() {
+            sendButton.disabled = true;
+            userInput.disabled = true;
+            errorMessageDiv.classList.add('hidden');
+
+            const loadingDiv = document.createElement('div');
+            loadingDiv.id = 'loading-indicator';
+            loadingDiv.className = 'flex justify-start';
+            loadingDiv.innerHTML = `
+                <div class="aura-message p-3 rounded-xl max-w-xs shadow-sm">
+                    <div class="loading-dot"></div>
+                    <div class="loading-dot"></div>
+                    <div class="loading-dot"></div>
+                </div>
+            `;
+            chatMessages.appendChild(loadingDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        /**
+         * Hides the loading indicator.
+         */
+        function hideLoading() {
+            const loadingDiv = document.getElementById('loading-indicator');
+            if (loadingDiv) {
+                loadingDiv.remove();
+            }
+            // Only re-enable if onboarding isn't set to the "connecting" phase
+            sendButton.disabled = onboardingStep === -2; 
+            userInput.disabled = onboardingStep === -2;
+            userInput.focus();
+        }
+
+        /**
+         * Handles the API call with exponential backoff.
+         */
+        async function fetchWithBackoff(payload, retryCount = 0) {
+            const MAX_RETRIES = 5;
+            const DELAY_MS = Math.pow(2, retryCount) * 1000;
+
+            try {
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (response.status === 429 && retryCount < MAX_RETRIES) {
+                    await new Promise(resolve => setTimeout(resolve, DELAY_MS));
+                    return fetchWithBackoff(payload, retryCount + 1);
+                }
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                return response.json();
+
+            } catch (error) {
+                if (retryCount < MAX_RETRIES) {
+                    await new Promise(resolve => setTimeout(resolve, DELAY_MS));
+                    return fetchWithBackoff(payload, retryCount + 1);
+                }
+                throw new Error("Failed to connect to the AI service after multiple retries.");
+            }
+        }
+
+
+        // --- Profile and Onboarding Logic (Using Session Storage) ---
+
+        /**
+         * Saves the current user profile (name/occupation) and chat history to sessionStorage.
+         */
+        function saveStateToSession() {
+            const profile = { name: userName, occupation: userOccupation };
+            sessionStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+            sessionStorage.setItem(CHAT_KEY, JSON.stringify(chatHistory));
+        }
+
+        async function saveUserProfile(data) {
+            // Update local state
+            if (data.name) userName = data.name.trim().substring(0, 50);
+            if (data.occupation) userOccupation = data.occupation;
+            saveStateToSession();
+        }
+
+        async function loadUserProfile() {
+            try {
+                const profileString = sessionStorage.getItem(PROFILE_KEY);
+                if (profileString) {
+                    const data = JSON.parse(profileString);
+                    userName = data.name || null;
+                    userOccupation = data.occupation || null;
+                }
+            } catch (error) {
+                console.error("Error loading user profile from sessionStorage:", error);
+            }
+            // Now, determine the starting point of the conversation
+            handleOnboarding(true);
+        }
+
+        /**
+         * Manages the conversation flow based on profile status.
+         */
+        function handleOnboarding(initialCheck = false) {
+            let greeting = "";
+            let newOnboardingStep = -1;
+
+            if (initialCheck) {
+                // Determine the starting step based on loaded profile data
+                if (!userName) {
+                    newOnboardingStep = 0;
+                } else if (!userOccupation) {
+                    newOnboardingStep = 1;
+                } else {
+                    newOnboardingStep = -1; // Complete
+                }
+            } else {
+                // If not an initial check, just proceed to the next step
+                newOnboardingStep = onboardingStep;
+                // --- FIX: Logic to move to the NEXT step after a successful response ---
+                if (newOnboardingStep === 0) newOnboardingStep = 1;
+                else if (newOnboardingStep === 1) newOnboardingStep = -1;
+            }
+
+            if (onboardingStep === newOnboardingStep && !initialCheck) return; // No change needed unless it's the initial check
+
+            onboardingStep = newOnboardingStep;
+
+            // Find and remove old greeting before replacing it
+            chatHistory = chatHistory.filter(msg => !msg.isGreeting);
+
+            if (onboardingStep === 0) {
+                // Step 0: Ask for Name
+                greeting = "Hello there! I'm Aura, your compassionate wellness companion. Before we start, what's your name? I'd love to address you personally.";
+            } else if (onboardingStep === 1) {
+                // Step 1: Ask for Occupation
+                greeting = `It's wonderful to meet you, ${userName}! Are you currently a **student** or an **employee**? This helps me offer more relevant tips.`;
+            } else if (onboardingStep === -1) {
+                // Onboarding complete: Standard Greeting
+                greeting = `Welcome back, ${userName}! As an ${userOccupation}, you work hard. I'm here to listen and support you. How are you feeling today?`;
+            } else {
+                 // Should only happen during initial 'connecting' state (-2)
+                 greeting = "Aura is connecting...";
+            }
+
+            // Display the new greeting
+            const newGreeting = { role: "model", parts: [{ text: greeting }], isGreeting: true, timestamp: Date.now() };
+            
+            // If it's a new greeting (not just rendering existing history), add it.
+            if(onboardingStep !== -2) { 
+               chatHistory.unshift(newGreeting); 
+            }
+
+            // Ensure the initial placeholder is removed if it exists
+            const placeholder = document.querySelector('.initial-greeting-placeholder');
+            if (placeholder) placeholder.remove();
+
+            renderAllMessages();
+        }
+
+        /**
+         * Processes the user input during the initial name/occupation flow.
+         */
+        function handleOnboardingResponse(response) {
+            if (onboardingStep === 0) {
+                // Step 0: User provided Name
+                saveUserProfile({ name: response });
+                handleOnboarding(); // Move to step 1
+            } else if (onboardingStep === 1) {
+                // Step 1: User provided Occupation
+                const cleanResponse = response.toLowerCase();
+                let determinedOccupation = 'individual';
+                if (cleanResponse.includes('student') || cleanResponse.includes('school') || cleanResponse.includes('college')) {
+                    determinedOccupation = 'student';
+                } else if (cleanResponse.includes('employee') || cleanResponse.includes('work') || cleanResponse.includes('job')) {
+                    determinedOccupation = 'employee';
+                }
+
+                saveUserProfile({ occupation: determinedOccupation });
+                handleOnboarding(); // Move to complete (-1)
+            }
+        }
+
+        // --- Chat History Functions (Using Session Storage) ---
+
+        function loadChatHistory() {
+            try {
+                const chatString = sessionStorage.getItem(CHAT_KEY);
+                if (chatString) {
+                    const loadedHistory = JSON.parse(chatString).filter(msg => !msg.isGreeting);
+                    
+                    // Rebuild chatHistory: System Greeting + Messages from Session Storage
+                    const currentGreeting = chatHistory.find(msg => msg.isGreeting);
+                    chatHistory = currentGreeting ? [currentGreeting] : [];
+                    
+                    // Add previous messages (sorted by timestamp)
+                    chatHistory.push(...loadedHistory.sort((a, b) => a.timestamp - b.timestamp));
+                }
+            } catch (error) {
+                console.error("Error loading chat history from sessionStorage:", error);
+            }
+            renderAllMessages();
+        }
+
+        /**
+         * Main function to send the message and get a response or handle onboarding.
+         */
+        window.sendMessage = async function() {
+            const userText = userInput.value.trim();
+            if (userText === '' || !isAuthReady) return;
+
+            // Clear input
+            userInput.value = '';
+
+            // Create message object for local state/sessionStorage
+            const newUserMessage = {
+                role: "user",
+                parts: [{ text: userText }],
+                timestamp: Date.now()
+            };
+
+            // Handle Onboarding Steps (Name and Occupation)
+            if (onboardingStep !== -1) {
+                // 1. Add user message to local history and session storage
+                chatHistory.push(newUserMessage);
+                saveStateToSession(); 
+                
+                // 2. Handle next step (which internally renders the new prompt)
+                handleOnboardingResponse(userText);
+                return;
+            }
+
+            // Normal Chat Flow
+            showLoading();
+
+            // 1. Add user message to local history and session storage
+            chatHistory.push(newUserMessage);
+            saveStateToSession();
+
+            // 2. Construct API payload using the history
+            const apiHistory = getApiChatHistory();
+
+            const payload = {
+                contents: apiHistory,
+                systemInstruction: SYSTEM_INSTRUCTION
+            };
+
+            try {
+                // 3. Fetch response
+                const result = await fetchWithBackoff(payload);
+                const candidate = result.candidates?.[0];
+
+                if (candidate && candidate.content?.parts?.[0]?.text) {
+                    const modelResponse = candidate.content.parts[0].text;
+
+                    // 4. Save model message to local history and session storage
+                    const newModelMessage = {
+                        role: "model",
+                        parts: [{ text: modelResponse }],
+                        timestamp: Date.now()
+                    };
+                    
+                    chatHistory.push(newModelMessage);
+                    saveStateToSession(); // Save updated history
+
+                    // 5. Render all messages (including the new model response)
+                    renderAllMessages();
+
+                } else {
+                    throw new Error("Received an empty or malformed response from the model.");
+                }
+
+            } catch (error) {
+                console.error("Gemini API Error:", error);
+                const safeErrorMsg = "Aura apologizes, but I seem to be having trouble connecting right now. Please try again in a moment. Rest assured, I'm still here for you.";
+                showError(safeErrorMsg);
+            } finally {
+                hideLoading();
+            }
+        }
+
+        // --- Initialization ---
+        window.onload = async () => {
+            showLoading(); // Show initial connecting state
+            
+            try {
+                // Load profile data (name/occupation) from session storage
+                await loadUserProfile(); 
+                
+                // Load existing chat history from session storage
+                loadChatHistory();
+                
+            } catch (error) {
+                console.error("App startup failed:", error);
+                showError("The app failed to start. Please check the console.");
+            } finally {
+                hideLoading(); // Hide loading, the app is ready for interaction
+            }
+
+            lucide.createIcons();
+        };
+    </script>
+</body>
+</html>
